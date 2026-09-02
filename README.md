@@ -1,15 +1,8 @@
-# Prosper Challenge — Context Management
+# Prosper Voice Agent
 
-Voice AI for healthcare scheduling. An agent is a **graph of nodes** (Pipecat Flows), defined declaratively as JSON and compiled into a runnable voice pipeline.
-
-- **Phase 1** — a UI to edit the node graph and place a test call.
-- **Phase 2** — a context-management approach so a scheduling agent can reliably and cost-effectively navigate a large catalog of locations, doctors, and appointment types.
-
-```
-browser mic  ->  ElevenLabs STT  ->  OpenAI LLM  ->  ElevenLabs TTS  ->  browser
-```
-
-Pipecat's dev runner ships a **prebuilt browser client**, so the test-call UI comes for free — no frontend code to write yet.
+A user can edit the node graph and place a test call from the UI, similar to existing products like ElevenLabs Agents or Retell AI.
+A Pipecat voice pipeline (WebRTC + ElevenLabs STT/TTS + OpenAI LLM) whose conversation is a node graph built with Pipecat Flows. 
+An agent is defined declaratively as JSON and compiled into a runnable flow at runtime by an AgentBuilder, and can be exercised through a browser test call. 
 
 ## Quickstart
 
