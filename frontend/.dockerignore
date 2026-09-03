@@ -1,0 +1,15 @@
+# Dependencies — installed fresh during the build stage
+node_modules/
+
+# Previous build output
+dist/
+
+# Local env files — not needed at build time
+.env
+.env.*
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

@@ -6,39 +6,46 @@ services:
       POSTGRES_DB: prosper
       POSTGRES_USER: prosper
       POSTGRES_PASSWORD: prosper
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backend/db/schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    networks:
+      - backend
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U prosper -d prosper"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
 
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    networks:
+      - backend
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 10
+    restart: unless-stopped
 
   # ── One-shot DB seeder ──────────────────────────────────────────────────────
   seed:
     build:
       context: ./backend
+      target: runtime
     command: python db/seed.py
     environment:
       DATABASE_URL: postgresql://prosper:prosper@postgres:5432/prosper
       REDIS_URL: redis://redis:6379
     env_file:
       - ./backend/.env
+    networks:
+      - backend
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     restart: "no"
 
@@ -46,6 +53,7 @@ services:
   bot:
     build:
       context: ./backend
+      target: runtime
     # --host 0.0.0.0 ensures the Pipecat runner binds on all interfaces,
     # not just loopback, so nginx in the frontend container can reach it.
     command: python bot.py --host 0.0.0.0
@@ -56,9 +64,9 @@ services:
       REDIS_URL: redis://redis:6379
     env_file:
       - ./backend/.env
-    volumes:
-      # Shared with api so saved agents are immediately visible to the bot.
-      - ./backend/data:/app/data
+    networks:
+      - backend
+      - services
     depends_on:
       postgres:
         condition: service_healthy
@@ -72,10 +80,18 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 256M
 
   api:
     build:
       context: ./backend
+      target: runtime
     command: python api.py
     ports:
       - "8000:8000"
@@ -84,8 +100,9 @@ services:
       REDIS_URL: redis://redis:6379
     env_file:
       - ./backend/.env
-    volumes:
-      - ./backend/data:/app/data
+    networks:
+      - backend
+      - services
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +116,13 @@ services:
       timeout: 5s
       retries: 6
       start_period: 15s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
 
   # ── Frontend ────────────────────────────────────────────────────────────────
   frontend:
@@ -106,11 +130,27 @@ services:
       context: ./frontend
     ports:
       - "3000:3000"
+    networks:
+      - services
     depends_on:
       bot:
         condition: service_healthy
       api:
         condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+
+networks:
+  # backend: postgres + redis only — not reachable from the frontend container
+  backend:
+    driver: bridge
+    internal: true
+  # services: bot + api + frontend — allows nginx to proxy to the two backend services
+  services:
+    driver: bridge
 
 volumes:
   postgres_data:

@@ -1,0 +1,18 @@
+# Virtual environment — never copy into the image
+.venv/
+
+# Python byte-code caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local secrets — injected at runtime via docker-compose env_file
+.env
+
+# IDE / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
