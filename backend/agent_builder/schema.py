@@ -45,6 +45,7 @@ class Node:
     task_messages: list = field(default_factory=list)   # this node's objectives
     role_message: Optional[str] = None                  # overrides the global persona
     edges: list = field(default_factory=list)           # list[Edge]; transitions out
+    tools: list = field(default_factory=list)           # list[str]; registry tool names
     pre_actions: list = field(default_factory=list)
     post_actions: list = field(default_factory=list)
     end: bool = False                                   # terminal -> ends the call
@@ -56,6 +57,7 @@ class Node:
             task_messages=d.get("task_messages", []),
             role_message=d.get("role_message"),
             edges=[Edge.from_dict(e) for e in d.get("edges", [])],
+            tools=d.get("tools", []),
             pre_actions=d.get("pre_actions", []),
             post_actions=d.get("post_actions", []),
             end=d.get("end", False),

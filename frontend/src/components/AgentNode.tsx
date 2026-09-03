@@ -6,9 +6,10 @@ interface AgentNodeProps {
     node: AgentNodeData;
     isInitial: boolean;
   };
+  selected?: boolean;
 }
 
-export default function AgentNode({ data }: AgentNodeProps) {
+export default function AgentNode({ data, selected }: AgentNodeProps) {
   const { node, isInitial } = data;
   const firstTask = node.task_messages[0]?.content ?? '';
   const preview = firstTask.length > 80 ? firstTask.slice(0, 80) + '…' : firstTask;
@@ -22,12 +23,12 @@ export default function AgentNode({ data }: AgentNodeProps) {
   return (
     <div style={{
       background: bg,
-      border: `1.5px solid var(--color-node-border)`,
+      border: selected ? '2px solid #3b82f6' : '1.5px solid var(--color-node-border)',
+      boxShadow: selected ? '0 0 0 3px rgba(59,130,246,0.15)' : '0 1px 3px rgba(0,0,0,0.08)',
       borderRadius: 8,
       padding: '10px 14px',
       width: 240,
       minHeight: 80,
-      boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
     }}>
       <Handle type="target" position={Position.Left} />
 

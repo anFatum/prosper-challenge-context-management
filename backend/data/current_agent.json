@@ -1,0 +1,321 @@
+{
+  "name": "Prosper Scheduler",
+  "voice_id": "21m00Tcm4TlvDq8ikWAM",
+  "model": "gpt-4o",
+  "persona": "You are a warm, efficient scheduling assistant for a healthcare clinic network. Your responses are spoken aloud, so avoid emojis, markdown, bullet points, or anything that can't be read out. Keep replies to one or two short sentences. Always use an available function to move the conversation forward — never invent slot times or clinic details.",
+  "initial_node": "greeting",
+  "nodes": [
+    {
+      "name": "greeting",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Greet the caller warmly, introduce yourself as the clinic's scheduling assistant, and ask whether they'd like to book, reschedule, or cancel an appointment. If they mention a preference for a location, provider, or time of day before you ask, call `capture_preference` to save it."
+        }
+      ],
+      "edges": [
+        {
+          "function": "choose_intent",
+          "description": "Record what the caller wants to do once they state it.",
+          "target": "collect_name",
+          "properties": {
+            "intent": {
+              "type": "string",
+              "enum": ["book", "reschedule", "cancel"],
+              "description": "What the caller wants to do."
+            }
+          },
+          "required": ["intent"]
+        }
+      ]
+    },
+
+    {
+      "name": "collect_name",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Ask the caller for their full name. Once you have it, call `record_name`."
+        }
+      ],
+      "edges": [
+        {
+          "function": "record_name",
+          "description": "Record the caller's full name.",
+          "target": "collect_reason",
+          "properties": {
+            "full_name": {"type": "string", "description": "Caller's full name."}
+          },
+          "required": ["full_name"]
+        }
+      ]
+    },
+
+    {
+      "name": "collect_reason",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Ask the caller to describe the reason for their visit in their own words. Once they answer, call `classify_appointment_type` with their exact words. If it returns ERROR, call `classification_error` immediately. If it returns UNSPECIFIED, call `retry_reason` and ask them to describe the visit differently — do not offer examples. Repeat until you get a valid appointment type ID, then call `record_reason`. While waiting, if the caller mentions a preference for a location, provider, or time of day, call `capture_preference` to save it."
+        }
+      ],
+      "tools": ["classify_appointment_type"],
+      "edges": [
+        {
+          "function": "classification_error",
+          "description": "Call immediately when classify_appointment_type returns status ERROR.",
+          "target": "technical_error",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "retry_reason",
+          "description": "Call when classify_appointment_type returns UNSPECIFIED. Loops back to ask again.",
+          "target": "collect_reason",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "record_reason",
+          "description": "Call only when classify_appointment_type returned a valid appointment type ID.",
+          "target": "validate_appointment",
+          "properties": {
+            "reason": {"type": "string", "description": "The caller's own description of their visit reason."}
+          },
+          "required": ["reason"]
+        }
+      ]
+    },
+
+    {
+      "name": "technical_error",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Apologise briefly. Let the caller know there is a technical issue and you are unable to process their request right now. Ask them to call back in a few minutes."
+        }
+      ],
+      "end": true
+    },
+
+    {
+      "name": "validate_appointment",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "First call `check_appointment_requirements` to find out whether a referral is needed. If it does NOT require one, immediately call `proceed_to_search`. If it DOES require one, warmly ask the patient whether they have a referral from their primary care doctor, then call the appropriate edge."
+        }
+      ],
+      "tools": ["check_appointment_requirements"],
+      "edges": [
+        {
+          "function": "proceed_to_search",
+          "description": "Call immediately when the appointment type does not require a referral.",
+          "target": "check_new_patient",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "referral_confirmed",
+          "description": "Call when the patient confirms they have a referral.",
+          "target": "check_new_patient",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "referral_unavailable",
+          "description": "Call when the patient says they do not have a referral.",
+          "target": "cannot_proceed",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+
+    {
+      "name": "cannot_proceed",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Explain kindly that this appointment type requires a referral from their primary care physician, which they will need to obtain first. Let them know they are welcome to call back once they have it, and wish them well."
+        }
+      ],
+      "end": true
+    },
+
+    {
+      "name": "check_new_patient",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "You have the result of check_appointment_requirements in context, including new_patients_allowed. If new_patients_allowed is true, call skip_new_patient_check immediately — do not ask the patient anything. If new_patients_allowed is false, ask warmly: 'Have you visited us before, or is this your first time?' If they are a returning patient, ask which doctor or specialist they have seen here before — save that name in previous_provider and call is_returning_patient. If they are a new patient, call is_new_patient."
+        }
+      ],
+      "edges": [
+        {
+          "function": "skip_new_patient_check",
+          "description": "Call immediately when new_patients_allowed is true — no question needed.",
+          "target": "search_slots",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "is_returning_patient",
+          "description": "Call when the patient confirms they are a returning patient.",
+          "target": "search_slots",
+          "properties": {
+            "previous_provider": {
+              "type": "string",
+              "description": "Name of the provider the patient has seen before, if they mentioned one."
+            }
+          },
+          "required": []
+        },
+        {
+          "function": "is_new_patient",
+          "description": "Call when the patient confirms this is their first visit.",
+          "target": "cannot_proceed_new_patient",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+
+    {
+      "name": "cannot_proceed_new_patient",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Explain kindly that this particular appointment type is only available for returning patients. Suggest they contact the clinic directly so the team can help find the right first visit option for them. Wish them well."
+        }
+      ],
+      "end": true
+    },
+
+    {
+      "name": "search_slots",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Call `init_slot_search` first — it will load all available appointments and automatically apply any preferences the caller mentioned earlier. CRITICAL: never invent, guess, or recall any provider name, location, date, or time from memory — only read out values that appear verbatim in the most recent tool response. Read the returned options aloud naturally, for example: 'I have a few options — Dr Smith at Downtown Clinic on Monday September 8th at 9:30 in the morning, or Dr Patel at the Westside location on Tuesday at 1 PM.' Then ask the caller which one they prefer, or whether they would like a different location, provider, or time of day. Use `filter_by_location`, `filter_by_provider`, or `filter_by_time` to narrow results. Use `get_next_options` when the caller asks to hear more. Use `clear_filter` if they want to widen the search again. IMPORTANT — when a filter tool returns status no_slots: the previous options are still fully available and the state has not changed. Tell the caller what was not found (e.g. 'I don't have any slots with Dr Wei Sato for this appointment type'), then re-offer the options you already read out — do not end the conversation and do not invent alternative slots. Only call `get_next_options` if the caller explicitly asks for additional options beyond what was already presented. If `init_slot_search` returns status no_slots, call `no_slots_found`. When the caller chooses a slot, call `select_slot` with the slot_id."
+        }
+      ],
+      "tools": [
+        "init_slot_search",
+        "filter_by_location",
+        "filter_by_provider",
+        "filter_by_time",
+        "get_next_options",
+        "clear_filter"
+      ],
+      "edges": [
+        {
+          "function": "select_slot",
+          "description": "Call when the caller has chosen a specific appointment slot.",
+          "target": "confirm_booking",
+          "properties": {
+            "slot_id": {
+              "type": "string",
+              "description": "The slot_id value from the options returned by init_slot_search or a filter tool."
+            },
+            "provider": {
+              "type": "string",
+              "description": "Provider name as returned in the options (for confirmation read-back)."
+            },
+            "location": {
+              "type": "string",
+              "description": "Location name as returned in the options."
+            },
+            "date": {
+              "type": "string",
+              "description": "Date as returned in the options (ISO format, e.g. '2026-09-08')."
+            },
+            "time": {
+              "type": "string",
+              "description": "Time range as returned in the options (e.g. '9:30 AM – 1:00 PM')."
+            }
+          },
+          "required": ["slot_id", "provider", "location", "date", "time"]
+        },
+        {
+          "function": "no_slots_found",
+          "description": "Call when init_slot_search returns status no_slots.",
+          "target": "no_slots",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+
+    {
+      "name": "no_slots",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Let the caller know there are no available appointments for that appointment type right now. Briefly apologise, then give them two options: they can try different filter criteria for the same appointment (different doctor, location, or time) — in which case call `try_different_filters`; or they can describe an entirely different appointment type — call `try_different_appointment`. If they want to hang up, call `end_call`."
+        }
+      ],
+      "edges": [
+        {
+          "function": "try_different_filters",
+          "description": "Call when the caller wants to try the same appointment type with a different doctor, location, or time — keeps the appointment type and referral already confirmed.",
+          "target": "search_slots",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "try_different_appointment",
+          "description": "Call when the caller wants to book a completely different type of appointment.",
+          "target": "collect_reason",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "end_call",
+          "description": "Call when the caller does not want to try anything else.",
+          "target": "goodbye",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+
+    {
+      "name": "confirm_booking",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Read back the full appointment details to the caller: their name, the provider, the location, and the date and time. For example: 'To confirm — I have you down for an appointment with Dr Smith at Downtown Clinic on Monday September 8th at 9:30 in the morning. Does that sound right?' If they confirm, call `book_slot` to save the booking. If `book_slot` returns status ok, call `booking_confirmed`. If it returns status conflict, apologise briefly — the slot was just taken — and call `go_back` so they can choose again. If the caller wants to change anything before confirming, call `go_back` immediately without calling `book_slot`."
+        }
+      ],
+      "tools": ["book_slot"],
+      "edges": [
+        {
+          "function": "booking_confirmed",
+          "description": "Call after book_slot returns status ok.",
+          "target": "goodbye",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "go_back",
+          "description": "Call when the caller wants to change their selection, or when book_slot returns status conflict.",
+          "target": "search_slots",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
+
+    {
+      "name": "goodbye",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Tell the caller their appointment is confirmed and they will receive a confirmation shortly. Thank them by name and say goodbye warmly."
+        }
+      ],
+      "end": true
+    }
+  ]
+}

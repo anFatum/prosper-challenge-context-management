@@ -17,6 +17,7 @@ from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema, NodeConfig
 
 from .schema import AgentConfig, Edge, Node
+from tools.registry import GLOBAL_TOOLS, REGISTRY
 
 
 class AgentBuilder:
@@ -60,11 +61,20 @@ class AgentBuilder:
         return self._make_node(self._nodes_by_name[self.config.initial_node])
 
     def _make_node(self, node: Node) -> NodeConfig:
+        edge_functions = [self._make_edge_function(edge) for edge in node.edges]
+        all_tool_names = set(node.tools) | GLOBAL_TOOLS
+        tool_functions = []
+        for name in all_tool_names:
+            if name in REGISTRY:
+                tool_functions.append(REGISTRY[name])
+            elif name not in GLOBAL_TOOLS:
+                logger.warning(f"Tool '{name}' not found in registry, skipping.")
+
         node_config: NodeConfig = {
             "name": node.name,
             "role_message": node.role_message or self.config.persona,
             "task_messages": node.task_messages,
-            "functions": [self._make_edge_function(edge) for edge in node.edges],
+            "functions": edge_functions + tool_functions,
         }
         if node.pre_actions:
             node_config["pre_actions"] = node.pre_actions

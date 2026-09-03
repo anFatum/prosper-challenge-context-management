@@ -11,9 +11,15 @@ export interface AgentNode {
   task_messages: Array<{ role: string; content: string }>;
   role_message?: string;
   edges?: AgentEdge[];
+  tools?: string[];
   pre_actions: unknown[];
   post_actions: unknown[];
   end: boolean;
+}
+
+export interface ToolInfo {
+  name: string;
+  description: string;
 }
 
 export interface AgentConfig {

@@ -6,16 +6,33 @@ An agent is defined declaratively as JSON and compiled into a runnable flow at r
 
 ## Quickstart
 
-Requires **Python 3.11+**. Run from the repo root:
+Requires **Python 3.11+**, **Node.js 18+**, and **Docker** (for Postgres + Redis).
 
 ```bash
-make install
-make run
+cp backend/.env.example backend/.env   # fill in OPENAI_API_KEY and ELEVENLABS_API_KEY
+make install                           # create venv, install Python + frontend deps
+make db-reset                          # start Docker services, apply schema, seed data
+make run-all                           # start everything: backend, API, and frontend dev server
 ```
 
-Open the URL it prints (default `http://localhost:7860/client`), click **Connect**, allow mic access, and talk to the agent. `Ctrl+C` to stop. (`make help` lists all targets.)\
-\
-Remember to update the `.env` file accordingly.
+Then open `http://localhost:3000`, click **Connect**, allow mic access, and talk to the agent.
+
+## Make commands
+
+| Command | Description |
+|---|---|
+| `make install` | Create `backend/.venv`, install Python deps, install frontend npm deps |
+| `make run-all` | Start DB + Redis (Docker), voice backend, REST API, and frontend dev server |
+| `make run` | Voice agent backend only (`http://localhost:7860/client`) |
+| `make run-api` | REST API only (`http://localhost:8000`) — required for the Save/Connect flow |
+| `make dev` | Frontend dev server only (`http://localhost:3000`) |
+| `make test` | Run the backend test suite |
+| `make db-up` | Start PostgreSQL + Redis via Docker Compose |
+| `make db-down` | Stop Docker Compose services |
+| `make db-seed` | Seed the DB from `catalog.json` and `calendar.json` |
+| `make db-reset` | Full reset: tear down volumes, rebuild schema, re-seed |
+| `make clean` | Remove venv, `__pycache__`, and frontend build artefacts |
+| `make help` | Print all available targets |
 
 ## Layout
 

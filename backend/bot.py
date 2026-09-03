@@ -12,6 +12,7 @@
 #
 
 import os
+import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -35,14 +36,17 @@ from pipecat.workers.runner import WorkerRunner
 from pipecat_flows import FlowManager
 
 from agent_builder import AgentBuilder
+from db import close_pool, init_pool
+from db.redis import close_redis, get_redis, init_redis
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
 load_dotenv(Path(__file__).parent / ".env", override=True)
 
 
-# The agent this bot runs. Point this at any agent JSON (the Phase 2 Copilot
-# would generate one and drop it here).
-AGENT_FLOW = Path(__file__).parent / "example_flow.json"
+def _agent_flow() -> Path:
+    """Use the saved agent if present, fall back to the bundled example."""
+    current = Path(__file__).parent / "data" / "current_agent.json"
+    return current if current.exists() else Path(__file__).parent / "example_flow.json"
 
 
 transport_params = {
@@ -96,11 +100,20 @@ async def run_bot(
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info("Client connected — starting flow at initial node")
+        session_id = str(uuid.uuid4())
+        flow_manager.state["session_id"] = session_id
+        logger.info(f"Client connected — session {session_id}")
         await flow_manager.initialize(builder.build_initial_node())
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
+        session_id = flow_manager.state.get("session_id")
+        if session_id:
+            redis = get_redis()
+            keys = await redis.keys(f"session:{session_id}:*")
+            if keys:
+                await redis.delete(*keys)
+                logger.info(f"Cleaned up {len(keys)} Redis keys for session {session_id}")
         logger.info("Client disconnected")
         await worker.cancel()
 
@@ -111,9 +124,15 @@ async def run_bot(
 
 async def bot(runner_args: RunnerArguments):
     """Entry point invoked by the Pipecat dev runner (and Pipecat Cloud)."""
-    transport = await create_transport(runner_args, transport_params)
-    builder = AgentBuilder.from_json(AGENT_FLOW)
-    await run_bot(transport, runner_args, builder)
+    await init_pool()
+    await init_redis()
+    try:
+        transport = await create_transport(runner_args, transport_params)
+        builder = AgentBuilder.from_json(_agent_flow())
+        await run_bot(transport, runner_args, builder)
+    finally:
+        await close_pool()
+        await close_redis()
 
 
 if __name__ == "__main__":

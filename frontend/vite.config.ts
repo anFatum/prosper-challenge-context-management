@@ -6,8 +6,8 @@ export default defineConfig({
   server: {
     port: 3000,
     proxy: {
-      // Forward WebRTC signaling to the pipecat backend
-      '/api': { target: 'http://localhost:7860', changeOrigin: true },
+      // Agent CRUD REST API
+      '/api': { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })
