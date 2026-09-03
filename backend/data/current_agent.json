@@ -294,6 +294,7 @@
     },
     {
       "name": "confirm_booking",
+      "pre_actions": [{"type": "compress_slot_results"}],
       "task_messages": [
         {
           "role": "developer",

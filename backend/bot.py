@@ -11,6 +11,7 @@
 # Run:  python bot.py   then open http://localhost:7860/client
 #
 
+import json
 import os
 import uuid
 from pathlib import Path
@@ -40,7 +41,7 @@ from db import close_pool, init_pool
 from db.redis import close_redis, get_redis, init_redis
 
 # Load .env next to this file, so the bot runs the same from the repo root or backend/.
-load_dotenv(Path(__file__).parent / ".env", override=True)
+load_dotenv(Path(__file__).parent / ".env")
 
 
 def _agent_flow() -> Path:
@@ -107,6 +108,32 @@ async def run_bot(
             logger.info(f"LLM model → {model}")
 
     flow_manager.register_action("set_model", _set_model)
+
+    # Compress slot-search JSON payloads in context when the caller has already
+    # selected a slot. Replaces large options arrays with a one-line summary,
+    # keeping context lean for the confirm_booking and goodbye nodes.
+    async def _compress_slot_results(action: dict, flow_manager: FlowManager) -> None:
+        for msg in context.messages:
+            if msg.get("role") != "developer":
+                continue
+            try:
+                outer = json.loads(msg["content"])
+                if outer.get("type") != "async_tool" or outer.get("status") != "finished":
+                    continue
+                result = json.loads(outer.get("result", "{}"))
+                if "options" not in result:
+                    continue
+                n = len(result["options"])
+                outer["result"] = json.dumps({
+                    "status": result["status"],
+                    "note": f"[{n} slot options shown — slot selected, context trimmed]",
+                })
+                msg["content"] = json.dumps(outer)
+            except (json.JSONDecodeError, TypeError, KeyError):
+                pass
+        logger.info("Compressed slot search results in context")
+
+    flow_manager.register_action("compress_slot_results", _compress_slot_results)
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):

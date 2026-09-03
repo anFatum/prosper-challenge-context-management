@@ -58,7 +58,7 @@ flowchart LR
 # Out-of-Scope
 
 * Rescheduling and cancellation workflows.
-* Persisting agents in DB. Now it only updates the local file (`backend/data/current_agent.json`). 
+* Persisting agents in DB. Now it only updates the local file (`backend/data/current_agent.json`).
 
 ---
 
@@ -72,6 +72,8 @@ with a provider where `accepts_new_patients = false` (detailed in the *New Patie
 * **Continuous Slot Fragmentation:** The system does not currently perform schedule compaction or slot 
 optimization. Booking a 30-minute appointment inside an open 180-minute window books the whole 180 minute slot
 without optimization. (Intentionally left as it is)
+* The agent has issues with differentiating with New Patient versus Recurring categories, e.g. Dental Exam and New Patient Dental Exam.
+* Diversity sampling to recommend the available slots for a user is highly driven by the appointment date - the agent could propose the same location, provider and date if there are enough earliest time slots available.
 
 ---
 # Implementation Decisions 
@@ -118,6 +120,28 @@ Estimated per-call savings: **6–8 seconds** on the common happy path.
 
 ---
 
+### Context management
+
+Two techniques keep the conversation context lean as the call progresses through multiple nodes.
+
+**1. State injection on node transition.** Each time the `FlowManager` transitions to a new node, `AgentBuilder` prepends a compact developer message to the node's `task_messages`:
+
+```
+Session state: intent='book', full_name='Jane Smith', reason='back pain', appointment_type_id='42'
+```
+
+This gives the LLM all collected facts as a single, predictable line at the top of its task prompt, so it never needs to scan back through the full conversation history to remember what the caller said three nodes ago. Only scalar values are included (`str`, `int`, `float`, `bool`); operational keys (`session_id`, `active_filters`, `slot_cursor`) are excluded via a `_SKIP_STATE_KEYS` blocklist.
+
+**2. Slot result compression.** Slot search tool responses are the largest messages in the context — each `init_slot_search` or filter call returns a JSON payload with a full `options` array. Once the caller selects a slot and transitions to `confirm_booking`, those arrays are never needed again. A `compress_slot_results` pre-action fires on `confirm_booking` entry, scanning `context.messages` for finished `async_tool` developer messages that contain an `options` key and replacing them with a one-line summary:
+
+```json
+{"status": "ok", "note": "[3 slot options shown — slot selected, context trimmed]"}
+```
+
+This reduces the token count carried into `confirm_booking` and `goodbye` by roughly the size of all slot search responses (typically 2–4 tool results × ~200–400 tokens each).
+
+---
+
 ### Appointment type classification
 
 We utilize a low-latency model (e.g., `gpt-4o-mini` or `nano`-tier equivalents) strictly to output structured JSON mapping the user's intent to an `appointment_type_id`.
@@ -128,6 +152,7 @@ explained below for the production for sake of latency.
 **Pros:** 
 * Handles informal, ambiguous language and synonyms well out of the box. 
 * Caches prompt prefix tokens across concurrent calls.
+
 **Cons:** 
 * Latency: Introduces 1-2s latency per classification pass (extremelly slow for voice agents). 
 * Ambiguity: prone to top-k ambiguity when symptoms overlap multiple categories.
@@ -138,10 +163,11 @@ explained below for the production for sake of latency.
 For larger taxonomies, we generate embeddings for appointment titles/descriptions and run a cosine similarity query 
 against a pgvector index, passing only the top-5 candidates to the LLM (if there is a low confidence).
 
-Pros:
+**Pros:**
 * Latency: 50-100 ms, more than x10 times less comparing to LLM call.
 * Cost: at 15 QPS the cost of embedding comparison would be ~40$/month
-Cons:
+
+**Cons:**
 * Accuracy: at launch loses accuracy comparing to the LLM approach, needs tuning.
 
 ### Clinic Info Lookup
@@ -270,17 +296,19 @@ A new patient may only book appointment types where new_patients_allowed = true,
 #### Option 1. Explicitly gather providers
 We can ask the client whether it's a recurring visit and ask the client which doctors it has seen before (there could be many, we don't know)       
 
-Pros: 
+**Pros:**
 * No false positives: we will filter all providers the user has seen before
 * No additional step required on the end, booking can be proceeded with no problem
-Cons:
+
+**Cons:**
 * User can forget, lie about the providers, there could be many of them, not very user-friendly
 
 #### Option 2. Double check at the very end.
 
-Pros:
+**Pros:**
 * No chances to accidentally book the wrong provider.
-Cons:
+
+**Cons:**
 * High chances of going back, probably would be annoying for the clients if there are few such cases                                     
 #### Option 3. Partial filtering. [Preferred]
 
@@ -291,10 +319,11 @@ We also provide a ranking for the providers, ranking the accepts_new=True higher
 them first. Until the user explicilitly tells the specific provider, or there are no slots for another one - the 
 agent won't propose slots.
 
-Pros: 
+**Pros:**
 * Early filtering for appointments with new_patients_allowed=False
 * Relatively small complexity of change
-Cons:
+
+**Cons:**
 * We still can book the provider that doesn't accept new clients.
 
 #### Option 4. External provider
@@ -308,9 +337,10 @@ the client has seen on our own, but we don't have it in our challenge, so we wil
 
 Automatically update and persist the bot in real time whenever the schema changes.
 
-* **Pros:**
+**Pros:**
   * **Zero Latency on Connect:** Pressing the "Connect" button provides an immediate response because the latest state is already saved.
-* **Cons:**
+
+**Cons:**
   * **High Traffic Volume:** Every component addition or schema tweak requires a backend network request to persist state and return validation errors.
   * **Concurrency Risks:** Rapid client edits can cause race conditions where out-of-order requests corrupt database state (unless complex queueing or locking is implemented).
 
@@ -320,9 +350,10 @@ Automatically update and persist the bot in real time whenever the schema change
 
 Persist and validate the agent schema only when the user clicks the "Connect" button.
 
-* **Pros:**
+**Pros:**
   * **Low Traffic:** Network activity is reduced to a single payload when the user initiates a connection.
-* **Cons:**
+
+**Cons:**
   * **Tightly Coupled Operations:** Unlinks error boundaries; if schema creation or saving fails, the connection attempt fails as well.
   * **Unclear UI Feedback:** The user lacks visibility into whether their progress is saved before attempting to connect.
 
@@ -341,10 +372,12 @@ Validate the schema in real time as the user edits, but require an explicit acti
   * Supports optimistic locking in the database for safe concurrency control
   * We might add an optional "Revert" action for un-saved changes to bring the schema to it's last saved version.
   * If user unwillingly closes the tab - we might use cache so the changes won't be lost.
-* **Pros:**
+
+**Pros:**
   * **Manageable Database Load:** Writes occur strictly on explicit saves, while validation load is offloaded to lightweight stateless services.
   * **Clear UX Mental Model:** Decoupling saving from connecting gives users explicit control and clear visibility over their draft state.
-* **Cons:**
+
+**Cons:**
   * **Gated Connection Flow:** Disabling the "Connect" button during unsaved states introduces an extra step for the user.
 
 ---

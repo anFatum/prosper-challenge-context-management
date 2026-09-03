@@ -89,12 +89,29 @@ class AgentBuilder:
             node_config["post_actions"] = [{"type": "end_conversation"}]
         return node_config
 
+    # State keys that are operational/internal and not useful to inject into prompts.
+    _SKIP_STATE_KEYS = frozenset({"session_id", "active_filters", "slot_cursor"})
+
     def _make_edge_function(self, edge: Edge) -> FlowsFunctionSchema:
         async def handler(args: dict, flow_manager: FlowManager):
             # Persist what the caller gave us so later nodes can use it.
             flow_manager.state.update(args)
             logger.info(f"[{edge.function}] -> {edge.target} | collected: {args}")
             next_node = self._make_node(self._nodes_by_name[edge.target])
+
+            # Prepend a compact state summary so the LLM has all collected facts
+            # without scanning back through the conversation history.
+            state_ctx = {
+                k: v for k, v in flow_manager.state.items()
+                if k not in self._SKIP_STATE_KEYS and isinstance(v, (str, int, float, bool))
+            }
+            if state_ctx and next_node.get("task_messages"):
+                summary = ", ".join(f"{k}={v!r}" for k, v in state_ctx.items())
+                next_node["task_messages"].insert(0, {
+                    "role": "developer",
+                    "content": f"Session state: {summary}",
+                })
+
             return {"status": "success", **args}, next_node
 
         return FlowsFunctionSchema(

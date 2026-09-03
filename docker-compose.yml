@@ -1,4 +1,5 @@
 services:
+  # ── Infrastructure ──────────────────────────────────────────────────────────
   postgres:
     image: postgres:16-alpine
     environment:
@@ -25,6 +26,91 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # ── One-shot DB seeder ──────────────────────────────────────────────────────
+  seed:
+    build:
+      context: ./backend
+    command: python db/seed.py
+    environment:
+      DATABASE_URL: postgresql://prosper:prosper@postgres:5432/prosper
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - ./backend/.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ── Backend services ────────────────────────────────────────────────────────
+  bot:
+    build:
+      context: ./backend
+    # --host 0.0.0.0 ensures the Pipecat runner binds on all interfaces,
+    # not just loopback, so nginx in the frontend container can reach it.
+    command: python bot.py --host 0.0.0.0
+    ports:
+      - "7860:7860"
+    environment:
+      DATABASE_URL: postgresql://prosper:prosper@postgres:5432/prosper
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - ./backend/.env
+    volumes:
+      # Shared with api so saved agents are immediately visible to the bot.
+      - ./backend/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:7860/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  api:
+    build:
+      context: ./backend
+    command: python api.py
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://prosper:prosper@postgres:5432/prosper
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - ./backend/.env
+    volumes:
+      - ./backend/data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/api/agent || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
+
+  # ── Frontend ────────────────────────────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      bot:
+        condition: service_healthy
+      api:
+        condition: service_healthy
 
 volumes:
   postgres_data:

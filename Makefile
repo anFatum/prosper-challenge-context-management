@@ -5,7 +5,7 @@ PYTHON := $(VENV)/bin/python
 FRONTEND := frontend
 
 .PHONY: help install install-frontend run run-api run-all dev clean sync-flow \
-        db-up db-down db-seed db-reset test
+        db-up db-down db-seed db-reset test docker docker-down
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
@@ -24,7 +24,7 @@ test: ## Run the backend test suite
 	cd backend && $(PYTHON) -m pytest -v
 
 run: ## Run the voice agent backend (http://localhost:7860/client)
-	$(PYTHON) backend/bot.py
+	$(PYTHON) backend/bot.py --host 0.0.0.0
 
 run-api: ## Run the agent REST API (http://localhost:8000) — required for Save/Connect
 	$(PYTHON) backend/api.py
@@ -43,7 +43,7 @@ clean-dev: ## Remove frontend node_modules
 	rm -rf $(FRONTEND)/node_modules $(FRONTEND)/dist
 
 db-up: ## Start PostgreSQL + Redis via Docker Compose
-	docker compose up -d --wait
+	docker compose up -d --wait postgres redis
 
 db-down: ## Stop and remove Docker Compose services
 	docker compose down
@@ -55,6 +55,12 @@ db-reset: ## Tear down, rebuild schema, and re-seed
 	docker compose down -v
 	docker compose up -d --wait
 	$(PYTHON) backend/db/seed.py
+
+docker: ## Build and start all services (http://localhost:3000). Requires backend/.env with API keys.
+	docker compose up --build -d --wait
+
+docker-down: ## Stop and remove all Docker services
+	docker compose down
 
 clean: ## Remove the venv, Python caches, and frontend node_modules
 	rm -rf $(VENV)
