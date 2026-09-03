@@ -2,6 +2,7 @@ from pipecat_flows import FlowsFunctionSchema
 
 from .filters import (
     clear_filter,
+    filter_by_date,
     filter_by_location,
     filter_by_provider,
     filter_by_time,
@@ -27,6 +28,7 @@ REGISTRY: dict[str, FlowsFunctionSchema] = {
     filter_by_location.name: filter_by_location,
     filter_by_provider.name: filter_by_provider,
     filter_by_time.name: filter_by_time,
+    filter_by_date.name: filter_by_date,
     get_next_options.name: get_next_options,
     clear_filter.name: clear_filter,
     # Lookups
@@ -36,9 +38,11 @@ REGISTRY: dict[str, FlowsFunctionSchema] = {
 }
 
 # Tools injected on every node — available regardless of what the JSON declares.
+# NOTE: lookup_appointment_type is intentionally excluded — it competes with
+# classify_appointment_type in collect_reason and causes wrong tool selection.
+# Nodes that need it should declare it explicitly in their `tools` list.
 GLOBAL_TOOLS: frozenset[str] = frozenset({
     "lookup_location",
     "lookup_provider",
-    "lookup_appointment_type",
     "capture_preference",
 })

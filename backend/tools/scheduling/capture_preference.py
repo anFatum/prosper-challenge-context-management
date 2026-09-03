@@ -1,7 +1,7 @@
 from loguru import logger
 from pipecat_flows import FlowManager, FlowsFunctionSchema
 
-_VALID_TYPES = {"location", "provider", "time_of_day", "language"}
+_VALID_TYPES = {"location", "provider", "time_of_day", "language", "date"}
 
 
 async def _handler(args: dict, flow_manager: FlowManager) -> dict:
@@ -30,17 +30,21 @@ SCHEMA = FlowsFunctionSchema(
     properties={
         "type": {
             "type": "string",
-            "enum": ["location", "provider", "time_of_day", "language"],
+            "enum": ["location", "provider", "time_of_day", "language", "date"],
             "description": (
                 "'location' — preferred clinic location or city; "
                 "'provider' — preferred doctor by name; "
-                "'time_of_day' — 'morning' or 'afternoon'; "
-                "'language' — preferred language spoken by provider."
+                "'time_of_day' — 'morning', 'afternoon', or 'evening'; "
+                "'language' — preferred language spoken by provider; "
+                "'date' — a specific date expressed as 'today', 'tomorrow', or an ISO date like '2026-09-05'."
             ),
         },
         "value": {
             "type": "string",
-            "description": "The caller's own words (e.g. 'Mission Bay', 'Dr. Chen', 'morning', 'Spanish').",
+            "description": (
+                "The preference value. For 'date': use 'today', 'tomorrow', or ISO format (YYYY-MM-DD). "
+                "For others: the caller's own words (e.g. 'Mission Bay', 'Dr. Chen', 'morning', 'Spanish')."
+            ),
         },
     },
     required=["type", "value"],

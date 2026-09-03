@@ -11,11 +11,26 @@ Key schema (all keys expire at SESSION_TTL):
 """
 
 import json
-from datetime import date, time
+from datetime import date, time, timedelta
 
 import redis.asyncio as aioredis
 
 SESSION_TTL = 900  # 15 minutes
+
+
+# ── Date parsing ──────────────────────────────────────────────────────────────
+
+def parse_date(value: str) -> date | None:
+    """Parse 'today', 'tomorrow', or ISO date (YYYY-MM-DD). Returns None if unrecognised."""
+    v = value.lower().strip()
+    if v == "today":
+        return date.today()
+    if v == "tomorrow":
+        return date.today() + timedelta(days=1)
+    try:
+        return date.fromisoformat(v)
+    except ValueError:
+        return None
 
 
 # ── Score helpers ─────────────────────────────────────────────────────────────
@@ -84,16 +99,21 @@ async def build_slot_store(
 
     BUCKETS = ["morning", "afternoon", "evening"]
 
+    written_keys: set[str] = {base_key, data_key}
     async with redis.pipeline(transaction=False) as pipe:
         for r in rows:
             slot_id = r["id"]
             score = _composite_score(r["date"], r["start_time"], prov_rank[r["provider_id"]])
             bucket = BUCKETS[_time_bucket(r["start_time"])]
 
+            loc_key  = f"session:{session_id}:loc:{r['location_id']}"
+            prov_key = f"session:{session_id}:prov:{r['provider_id']}"
+            time_key = f"session:{session_id}:time:{bucket}"
+
             pipe.zadd(base_key, {slot_id: score})
-            pipe.zadd(f"session:{session_id}:loc:{r['location_id']}", {slot_id: 0})
-            pipe.zadd(f"session:{session_id}:prov:{r['provider_id']}", {slot_id: 0})
-            pipe.zadd(f"session:{session_id}:time:{bucket}", {slot_id: 0})
+            pipe.zadd(loc_key,  {slot_id: 0})
+            pipe.zadd(prov_key, {slot_id: 0})
+            pipe.zadd(time_key, {slot_id: 0})
             pipe.hset(data_key, slot_id, json.dumps({
                 "provider_id":    r["provider_id"],
                 "location_id":    r["location_id"],
@@ -105,15 +125,13 @@ async def build_slot_store(
                 "end_time":       r["end_time"].strftime("%H:%M"),
             }))
 
-        await pipe.execute()
+            written_keys |= {loc_key, prov_key, time_key}
 
-    # Set TTL on every key we just wrote
-    all_keys = await redis.keys(f"session:{session_id}:*")
-    if all_keys:
-        async with redis.pipeline(transaction=False) as pipe:
-            for k in all_keys:
-                pipe.expire(k, SESSION_TTL)
-            await pipe.execute()
+        # Set TTL on every key in the same pipeline — no separate KEYS scan needed.
+        for k in written_keys:
+            pipe.expire(k, SESSION_TTL)
+
+        await pipe.execute()
 
     return await redis.zcard(base_key)
 

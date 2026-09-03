@@ -1,8 +1,11 @@
+import json
+from datetime import date
+
 from pipecat_flows import FlowManager, FlowsFunctionSchema
 
 from db import get_pool
 from db.redis import get_redis
-from tools.filters._slot_helpers import build_slot_store, get_options, recompute_current
+from tools.filters._slot_helpers import build_slot_store, get_options, parse_date, recompute_current, _fmt_time
 from tools.utils import resolve_id
 
 
@@ -80,7 +83,37 @@ async def _handler(args: dict, flow_manager: FlowManager) -> dict:
         active_filters = []
         active_key, count = await recompute_current(session_id, [], redis)
 
-    options = await get_options(session_id, active_key, 0, redis)
+    # Apply date preference via score-range query — no per-date Redis key needed.
+    # Slot scores encode the date as days_from_today * 1000, so a single day's
+    # slots always fall within [days*1000, days*1000+999].
+    date_options: list[dict] | None = None
+    if "date" in prefs:
+        target = parse_date(prefs["date"])
+        if target is not None:
+            days = max(0, (target - date.today()).days)
+            score_min = days * 1000
+            score_max = days * 1000 + 999
+            date_slot_ids = await redis.zrangebyscore(active_key, score_min, score_max, start=0, num=3)
+            if date_slot_ids:
+                data_key = f"session:{session_id}:slot_data"
+                raw = await redis.hmget(data_key, *date_slot_ids)
+                date_options = []
+                for slot_id, r in zip(date_slot_ids, raw):
+                    if r is None:
+                        continue
+                    d = json.loads(r)
+                    title = f" ({d['provider_title']})" if d["provider_title"] else ""
+                    date_options.append({
+                        "slot_id": slot_id,
+                        "provider": f"{d['provider_name']}{title}",
+                        "location": d["location_name"],
+                        "date": d["date"],
+                        "time": f"{_fmt_time(d['start_time'])} – {_fmt_time(d['end_time'])}",
+                    })
+            else:
+                preference_not_matched.append(prefs["date"])
+
+    options = date_options if date_options is not None else await get_options(session_id, active_key, 0, redis)
     flow_manager.state["active_filters"] = active_filters
     flow_manager.state["slot_cursor"] = len(options)
 

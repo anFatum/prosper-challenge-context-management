@@ -1,6 +1,64 @@
+# System Architecture
+
+Below is the end-to-end component diagram for the voice scheduling agent:
+
+```mermaid
+flowchart LR
+    %% Layer 1: Client
+    subgraph L1["1. Client"]
+        direction TB
+        UI["React Builder UI"]
+        Caller["WebRTC Caller"]
+    end
+
+    %% Layer 2: Orchestration
+    subgraph L2["2. Voice Pipeline (Pipecat)"]
+        direction TB
+        STT["STT Engine"]
+        LLM["LLM Router\n(gpt-4o and\n gpt-4o--mini)"]
+        TTS["TTS Engine"]
+    end
+
+    %% Layer 3: Backend Services
+    subgraph L3["3. Backend Microservices"]
+        direction TB
+        Builder["Agent Builder"]
+        Intent["Intent Classifier"]
+        Lookup["Entity Lookup"]
+        Filter["Constraint Filter"]
+        Booking["Calendar Booking"]
+    end
+
+    %% Layer 4: Storage
+    subgraph L4["4. Persistence Layer"]
+        direction TB
+        DB[("PostgreSQL\n(pg_trgm)")]
+        Redis[("Redis Cache\n(Sorted Sets)")]
+    end
+
+    %% Flow connections
+    UI -->|Save Flow| Builder
+
+    Caller -->|Audio In| STT
+    STT -->|Text| LLM
+    LLM -->|Text Out| TTS
+    TTS -->|Audio Out| Caller
+
+    LLM -->|Identify| Intent
+    LLM -->|Lookup| Lookup
+    LLM -->|Filter Slots| Filter
+    LLM -->|Confirm| Booking
+
+    Lookup -->|B-Tree/Trigram| DB
+    Filter -->|Hard Rules| DB
+    Filter -->|Rank Slots| Redis
+    Booking -->|Atomic Lock| DB
+```
+
 # Out-of-Scope
 
 * Rescheduling and cancellation workflows.
+* Persisting agents in DB. Now it only updates the local file (`backend/data/current_agent.json`). 
 
 ---
 
@@ -43,6 +101,22 @@ In real-world application there will probably be some sort of DB to contain all 
 pick up a Postgres DB to map all of our data, it has a relational data structure therefore has a good match.
 
 For high read traffic, we'll use a Redis as a cache.
+
+### Per-node model selection
+
+Each Pipecat Flows node transition triggers one full LLM inference round trip. On a simple booking (greeting → name → reason → search → confirm → goodbye) that is 5–6 sequential LLM calls. With a single `gpt-4o` model throughout, these accumulate to 15–25 seconds of latency — unacceptable for a voice agent.
+
+Two levers reduce this:
+
+**1. Node consolidation.** The original design had separate `check_new_patient` and `validate_appointment` nodes; these were merged so referral and new-patient checks happen in a single LLM turn. The common happy path (no referral required, new patients allowed) now reaches `search_slots` in 2 LLM turns instead of 4.
+
+**2. Per-node model override.** The agent JSON supports a `"model"` field on each node. Simple routing nodes — `greeting`, `collect_name`, `collect_reason`, `validate_appointment`, `cannot_proceed*`, `goodbye` — run on `gpt-4o-mini`, which is approximately 3–5× faster for short, structured decisions. Nodes that reason over open-ended slot options — `search_slots`, `confirm_booking` — keep `gpt-4o` for accuracy.
+
+The switch is implemented as a `set_model` pre-action injected by `AgentBuilder` before the node's first inference. The bot registers a `set_model` action handler that mutates `llm._settings.model` at runtime, so no pipeline restart is needed between nodes.
+
+Estimated per-call savings: **6–8 seconds** on the common happy path.
+
+---
 
 ### Appointment type classification
 
@@ -141,6 +215,53 @@ where
 * `days_until` calculates the days until the first free time slot, making the earliest slots come earlier.
 
 Note that this does not guarantee provider or location diversity — if one provider has the three earliest slots, all three may surface before any other provider. The caller can always ask for more options or filter explicitly by provider or location.
+
+### Sequence Flow
+
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Caller
+    participant Agent as Pipecat Agent (LLM)
+    participant Engine as Filter Engine
+    participant DB as PostgreSQL DB
+    participant Cache as Redis Cache
+
+    Caller->>Agent: "I'd like to book a morning appointment for back pain."
+    
+    rect rgb(240, 248, 255)
+        Note over Agent, DB: Intent Mapping & Hard Constraints
+        Agent->>Engine: classify_appointment("back pain")
+        Engine-->>Agent: appointment_type_id: "ortho_spine"
+        Agent->>Engine: init_slot_search(appointment_type_id, preferences)
+        Engine->>DB: Query Hard Constraints (Provider ∩ Location ∩ Capabilities)
+        DB-->>Engine: Matching Provider/Location Pairs
+    end
+
+    rect rgb(255, 245, 238)
+        Note over Engine, Cache: Soft Preference Filtering & Diversity Scoring
+        Engine->>Cache: Score Candidate Slots (days_until*1000 + time_bucket*100 + prov_rank)
+        Cache-->>Engine: Ranked Diversity Candidates
+        Engine-->>Agent: Top-3 Diversified Slots
+    end
+
+    Agent->>Caller: "I have Dr. Smith available tomorrow at 9:00 AM or Dr. Amanda at 11:00 AM. Which works best?"
+    Caller->>Agent: "Let's do Dr. Smith at 9:00 AM."
+
+    rect rgb(240, 255, 240)
+        Note over Agent, DB: Concurrency Lock & Slot Commitment
+        Agent->>DB: UPDATE calendar_slots SET available=FALSE WHERE id=$1 AND available=TRUE
+        alt Row Updated (Success)
+            DB-->>Agent: 1 Row Affected
+            Agent->>Caller: "Great! Your appointment with Dr. Smith is confirmed."
+        else Row Locked by Concurrent Call (Failure)
+            DB-->>Agent: 0 Rows Affected
+            Agent->>Caller: "I'm sorry, that slot was just taken. Would you like the 11:00 AM slot instead?"
+        end
+    end
+```
+
 
 ### New-comers sorting
 
@@ -244,7 +365,7 @@ Validate the schema in real time as the user edits, but require an explicit acti
 
 * **EHR integration for new patient identity:** Connect to an EHR (e.g. Epic FHIR, Athena) to resolve the caller's identity and retrieve their visit history. This eliminates the remaining edge case where a new patient is booked with a provider who has `accepting_new = false`, and removes the need to ask the caller whether they are a returning patient.
 
-* **Provider/location diversity in initial options:** The current composite score surfaces the earliest slots regardless of provider or location variety. A post-sort diversity pass — e.g. pick the top slot per provider first, then fill remaining slots by score — would ensure the first options presented span different doctors and clinics. This requires changing `get_options` in `filters/_slot_helpers.py` from a plain `ZRANGE` slice to a diversity-aware selection loop over the sorted set.
+* **Provider/location diversity in initial options:** The current composite score surfaces the earliest slots regardless of provider or location variety. A post-sort diversity pass — e.g. pick the top slot per provider first, then fill remaining slots by score — would ensure the first options presented span different doctors and clinics. This requires changing `get_options` in `filters/_slot_helpers.py` from a plain `ZRANGE` slice to a diversity-aware selection loop over the sorted set. Additionally we might add the diversity based on the user location / doctor's rating if we then have such information.
 
 * **Slot compaction / schedule optimization:** When a booking covers only part of a larger open window, split the window and return the remaining portion as a new available slot rather than marking the entire window unavailable.
 

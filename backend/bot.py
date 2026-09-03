@@ -98,6 +98,16 @@ async def run_bot(
         transport=transport,
     )
 
+    # Allow individual nodes to specify a per-node model override via
+    # {"type": "set_model", "model": "..."} in their pre_actions list.
+    async def _set_model(action: dict, flow_manager: FlowManager) -> None:
+        model = action.get("model")
+        if model:
+            llm._settings.model = model
+            logger.info(f"LLM model → {model}")
+
+    flow_manager.register_action("set_model", _set_model)
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
         session_id = str(uuid.uuid4())

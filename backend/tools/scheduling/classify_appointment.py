@@ -64,17 +64,36 @@ async def _handler(args: dict, flow_manager: FlowManager) -> dict:
         flow_manager.state["appointment_type_id"] = "ERROR"
         return {"status": "error", "appointment_type_id": "ERROR"}
 
-    # Validate the returned ID against the DB
+    # Validate the returned ID and fetch requirements in the same query
+    appt_name = ""
+    requires_referral = False
+    new_patients_allowed = True
     if result != "UNSPECIFIED":
         pool = get_pool()
-        row = await pool.fetchrow("SELECT id FROM appointment_types WHERE id = $1", result)
+        row = await pool.fetchrow(
+            "SELECT id, name, requires_referral, new_patients_allowed FROM appointment_types WHERE id = $1",
+            result,
+        )
         if row is None:
             logger.warning(f"Classifier returned unknown id '{result}', falling back to UNSPECIFIED")
             result = "UNSPECIFIED"
+        else:
+            appt_name            = row["name"]
+            requires_referral    = row["requires_referral"]
+            new_patients_allowed = row["new_patients_allowed"]
 
-    flow_manager.state["appointment_type_id"] = result
-    logger.info(f"Appointment type classified as: {result}")
-    return {"status": "success", "appointment_type_id": result}
+    flow_manager.state["appointment_type_id"]   = result
+    flow_manager.state["requires_referral"]      = requires_referral
+    flow_manager.state["new_patients_allowed"]   = new_patients_allowed
+    logger.info(f"Appointment type classified as: {result} '{appt_name}' "
+                f"(referral={requires_referral}, new_patients={new_patients_allowed})")
+    return {
+        "status": "success",
+        "appointment_type_id": result,
+        "appointment_type_name": appt_name,
+        "requires_referral": requires_referral,
+        "new_patients_allowed": new_patients_allowed,
+    }
 
 
 SCHEMA = FlowsFunctionSchema(

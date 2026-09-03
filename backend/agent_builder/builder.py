@@ -76,8 +76,12 @@ class AgentBuilder:
             "task_messages": node.task_messages,
             "functions": edge_functions + tool_functions,
         }
-        if node.pre_actions:
-            node_config["pre_actions"] = node.pre_actions
+        pre_actions = list(node.pre_actions)
+        if node.model:
+            # Prepend a set_model action so the LLM switches model before its first inference.
+            pre_actions.insert(0, {"type": "set_model", "model": node.model})
+        if pre_actions:
+            node_config["pre_actions"] = pre_actions
         # Explicit post_actions win; otherwise a terminal node ends the call.
         if node.post_actions:
             node_config["post_actions"] = node.post_actions

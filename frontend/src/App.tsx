@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ReactFlowProvider } from '@xyflow/react';
 import AgentGraph from './components/AgentGraph';
 import type { AgentConfig, ToolInfo } from './types';
@@ -10,6 +10,7 @@ export default function App() {
   const [availableTools, setAvailableTools] = useState<ToolInfo[]>([]);
   const [isDirty, setIsDirty] = useState(false);
   const [callStatus, setCallStatus] = useState<CallStatus>('idle');
+  const pcRef = useRef<RTCPeerConnection | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -58,12 +59,86 @@ export default function App() {
     }
   };
 
-  const handleConnect = () => {
-    if (callStatus === 'idle') {
-      setCallStatus('connecting');
-      // TODO: WebRTC handshake with pipecat backend
-      setTimeout(() => setCallStatus('connected'), 800);
-    } else {
+  const handleConnect = async () => {
+    if (callStatus !== 'idle') {
+      pcRef.current?.close();
+      pcRef.current = null;
+      setCallStatus('idle');
+      return;
+    }
+
+    setCallStatus('connecting');
+
+    try {
+      // 1. Start a bot session on the Pipecat runner (port 7860 via vite proxy)
+      const startRes = await fetch('/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transport: 'webrtc', enableDefaultIceServers: true }),
+      });
+      if (!startRes.ok) throw new Error('Failed to start bot session — is the voice backend running? (make run)');
+      const { sessionId, iceConfig } = await startRes.json() as {
+        sessionId: string;
+        iceConfig?: RTCConfiguration;
+      };
+
+      // 2. Acquire microphone
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+      // 3. Set up peer connection
+      const pc = new RTCPeerConnection(iceConfig ?? {});
+      pcRef.current = pc;
+      stream.getAudioTracks().forEach(track => pc.addTrack(track, stream));
+
+      // Play bot audio as soon as the remote track arrives
+      pc.ontrack = (e) => {
+        if (e.track.kind === 'audio') {
+          const audio = new Audio();
+          audio.srcObject = e.streams[0] ?? new MediaStream([e.track]);
+          audio.autoplay = true;
+          audio.play().catch(() => {/* autoplay policy — user gesture already happened */});
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+        if (state === 'connected') setCallStatus('connected');
+        if (state === 'disconnected' || state === 'failed' || state === 'closed') {
+          pcRef.current = null;
+          setCallStatus('idle');
+        }
+      };
+
+      // 4. Create offer and wait for local ICE gathering to finish before sending
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      await new Promise<void>((resolve) => {
+        if (pc.iceGatheringState === 'complete') { resolve(); return; }
+        pc.onicegatheringstatechange = () => {
+          if (pc.iceGatheringState === 'complete') resolve();
+        };
+      });
+
+      // 5. Send the completed offer (ICE candidates embedded in SDP)
+      const offerRes = await fetch(`/sessions/${sessionId}/api/offer`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sdp: pc.localDescription!.sdp,
+          type: pc.localDescription!.type,
+        }),
+      });
+      if (!offerRes.ok) throw new Error('WebRTC offer rejected by server');
+      const answer = await offerRes.json() as { sdp: string; type: RTCSdpType };
+
+      // 6. Apply the server's answer — connection completes via onconnectionstatechange
+      await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+
+    } catch (err) {
+      console.error('WebRTC handshake failed:', err);
+      pcRef.current?.close();
+      pcRef.current = null;
       setCallStatus('idle');
     }
   };

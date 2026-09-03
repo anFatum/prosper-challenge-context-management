@@ -44,3 +44,4 @@ Then open `http://localhost:3000`, click **Connect**, allow mic access, and talk
 | `backend/data/catalog.json` | A deliberately large, deliberately messy clinic catalog (locations, providers, appointment types, booking rules) for the Phase 2 work. See [`backend/data/README.md`](backend/data/README.md). |
 
 To run a different agent, point `AGENT_FLOW` in `bot.py` at another JSON file.
+

@@ -2,7 +2,7 @@
   "name": "Prosper Scheduler",
   "voice_id": "21m00Tcm4TlvDq8ikWAM",
   "model": "gpt-4o",
-  "persona": "You are a warm, efficient scheduling assistant for a healthcare clinic network. Your responses are spoken aloud, so avoid emojis, markdown, bullet points, or anything that can't be read out. Keep replies to one or two short sentences. Always use an available function to move the conversation forward — never invent slot times or clinic details.",
+  "persona": "You are a warm, efficient scheduling assistant for a healthcare clinic network. Your responses are spoken aloud, so avoid emojis, markdown, bullet points, or anything that can't be read out. Keep replies to one or two short sentences. Always use an available function to move the conversation forward \u2014 never invent slot times or clinic details.",
   "initial_node": "greeting",
   "nodes": [
     {
@@ -10,7 +10,7 @@
       "task_messages": [
         {
           "role": "developer",
-          "content": "Greet the caller warmly, introduce yourself as the clinic's scheduling assistant, and ask whether they'd like to book, reschedule, or cancel an appointment. If they mention a preference for a location, provider, or time of day before you ask, call `capture_preference` to save it."
+          "content": "Greet the caller warmly, introduce yourself as the clinic's scheduling assistant, and ask whether they'd like to book, reschedule, or cancel an appointment. As soon as they state their intent, call `choose_intent` to move the conversation forward — do not ask any further questions first. If the caller volunteers a preference (location, provider, time of day, or date) alongside their intent, call `capture_preference` to save it before calling `choose_intent`. Never ask the caller about preferences in this node."
         }
       ],
       "edges": [
@@ -21,15 +21,21 @@
           "properties": {
             "intent": {
               "type": "string",
-              "enum": ["book", "reschedule", "cancel"],
+              "enum": [
+                "book",
+                "reschedule",
+                "cancel"
+              ],
               "description": "What the caller wants to do."
             }
           },
-          "required": ["intent"]
+          "required": [
+            "intent"
+          ]
         }
-      ]
+      ],
+      "model": "gpt-4o-mini"
     },
-
     {
       "name": "collect_name",
       "task_messages": [
@@ -44,22 +50,31 @@
           "description": "Record the caller's full name.",
           "target": "collect_reason",
           "properties": {
-            "full_name": {"type": "string", "description": "Caller's full name."}
+            "full_name": {
+              "type": "string",
+              "description": "Caller's full name."
+            }
           },
-          "required": ["full_name"]
+          "required": [
+            "full_name"
+          ]
         }
-      ]
+      ],
+      "model": "gpt-4o-mini"
     },
-
     {
       "name": "collect_reason",
       "task_messages": [
         {
           "role": "developer",
-          "content": "Ask the caller to describe the reason for their visit in their own words. Once they answer, call `classify_appointment_type` with their exact words. If it returns ERROR, call `classification_error` immediately. If it returns UNSPECIFIED, call `retry_reason` and ask them to describe the visit differently — do not offer examples. Repeat until you get a valid appointment type ID, then call `record_reason`. While waiting, if the caller mentions a preference for a location, provider, or time of day, call `capture_preference` to save it."
+          "content": "Your job is to understand what the caller wants to book and classify it.\n\nTwo tools are available \u2014 use exactly one based on what the caller says:\n  \u2022 `classify_appointment_type` \u2014 when the caller describes a medical reason or states what they want to book (e.g. 'I have back pain', 'I need a colonoscopy', 'annual checkup'). Pass their exact words.\n  \u2022 `lookup_appointment_type` \u2014 ONLY when the caller asks an explicit information question about a specific appointment type (e.g. 'How long is an allergy skin test?', 'Do I need a referral for X?'). Answer the question from the result, then ask them what they would like to book.\n\nNever call `lookup_appointment_type` to classify a booking intent \u2014 always use `classify_appointment_type` for that.\n\nIf `classify_appointment_type` returns status ERROR, call `classification_error` immediately. If it returns UNSPECIFIED, call `retry_reason` and ask them to describe the visit differently \u2014 do not offer examples.\n\nOnce you have a valid appointment type ID, read back the matched appointment type name to the caller and confirm it is correct before proceeding. For example: 'I've matched that to a Colonoscopy \u2014 does that sound right?' If the caller says it is wrong or wants something different, call `retry_reason` so they can describe it again. Do not transition until the caller confirms.\n\nOnce confirmed, check the two flags from the result:\n  \u2022 If requires_referral=false AND new_patients_allowed=true \u2192 call `proceed_to_search` immediately.\n  \u2022 Otherwise (referral required, or new patients not allowed, or both) \u2192 call `needs_validation`.\n\nWhile waiting, if the caller mentions a preference for a location, provider, time of day, or date, call `capture_preference` to save it."
         }
       ],
-      "tools": ["classify_appointment_type"],
+      "tools": [
+        "classify_appointment_type",
+        "lookup_appointment_type"
+      ],
+      "model": "gpt-4o-mini",
       "edges": [
         {
           "function": "classification_error",
@@ -70,23 +85,87 @@
         },
         {
           "function": "retry_reason",
-          "description": "Call when classify_appointment_type returns UNSPECIFIED. Loops back to ask again.",
+          "description": "Call when classify_appointment_type returns UNSPECIFIED.",
           "target": "collect_reason",
           "properties": {},
           "required": []
         },
         {
-          "function": "record_reason",
-          "description": "Call only when classify_appointment_type returned a valid appointment type ID.",
+          "function": "proceed_to_search",
+          "description": "Call when requires_referral=false AND new_patients_allowed=true. No further checks needed.",
+          "target": "search_slots",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "description": "The caller's own description of their visit reason."
+            }
+          },
+          "required": [
+            "reason"
+          ]
+        },
+        {
+          "function": "needs_validation",
+          "description": "Call when requires_referral=true OR new_patients_allowed=false (or both). Hands off to the validation step.",
           "target": "validate_appointment",
           "properties": {
-            "reason": {"type": "string", "description": "The caller's own description of their visit reason."}
+            "reason": {
+              "type": "string",
+              "description": "The caller's own description of their visit reason."
+            }
           },
-          "required": ["reason"]
+          "required": [
+            "reason"
+          ]
         }
       ]
     },
-
+    {
+      "name": "validate_appointment",
+      "model": "gpt-4o-mini",
+      "task_messages": [
+        {
+          "role": "developer",
+          "content": "Work through any outstanding checks using the flags from the earlier classify_appointment_type result. Always check the conversation history first \u2014 if the caller already answered a question, use that answer instead of asking again.\n\nStep 1 \u2014 Referral (only if requires_referral=true):\n  If the caller already stated they have a referral, treat it as confirmed and skip the question.\n  Otherwise ask warmly: 'Do you have a referral from your primary care doctor?' If no \u2192 call `referral_unavailable`. If yes \u2192 continue to Step 2.\n  Skip Step 1 entirely if requires_referral=false.\n\nStep 2 \u2014 New patient (only if new_patients_allowed=false):\n  If the caller already indicated they are a returning patient (e.g. mentioned a doctor they see here, said they've been before), extract the provider name if given, save it in `previous_provider`, and call `returning_patient` without asking again.\n  If the caller already indicated they are new, call `new_patient` without asking again.\n  Otherwise ask: 'Have you visited us before, or is this your first time?' If returning, ask which doctor they saw \u2014 save the name in `previous_provider` and call `returning_patient`. If new \u2192 call `new_patient`.\n  Skip Step 2 entirely if new_patients_allowed=true.\n\nIf all applicable checks pass, call `proceed_to_search`."
+        }
+      ],
+      "tools": [],
+      "edges": [
+        {
+          "function": "referral_unavailable",
+          "description": "Call when the patient does not have a referral.",
+          "target": "cannot_proceed",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "proceed_to_search",
+          "description": "Call when referral is confirmed and new_patients_allowed=true.",
+          "target": "search_slots",
+          "properties": {},
+          "required": []
+        },
+        {
+          "function": "returning_patient",
+          "description": "Call when referral is confirmed, new_patients_allowed=false, and the caller is a returning patient.",
+          "target": "search_slots",
+          "properties": {
+            "previous_provider": {
+              "type": "string",
+              "description": "Name of the provider the patient has seen before, if mentioned."
+            }
+          },
+          "required": []
+        },
+        {
+          "function": "new_patient",
+          "description": "Call when referral is confirmed, new_patients_allowed=false, and the caller is a new patient.",
+          "target": "cannot_proceed_new_patient",
+          "properties": {},
+          "required": []
+        }
+      ]
+    },
     {
       "name": "technical_error",
       "task_messages": [
@@ -95,43 +174,9 @@
           "content": "Apologise briefly. Let the caller know there is a technical issue and you are unable to process their request right now. Ask them to call back in a few minutes."
         }
       ],
-      "end": true
+      "end": true,
+      "model": "gpt-4o-mini"
     },
-
-    {
-      "name": "validate_appointment",
-      "task_messages": [
-        {
-          "role": "developer",
-          "content": "First call `check_appointment_requirements` to find out whether a referral is needed. If it does NOT require one, immediately call `proceed_to_search`. If it DOES require one, warmly ask the patient whether they have a referral from their primary care doctor, then call the appropriate edge."
-        }
-      ],
-      "tools": ["check_appointment_requirements"],
-      "edges": [
-        {
-          "function": "proceed_to_search",
-          "description": "Call immediately when the appointment type does not require a referral.",
-          "target": "check_new_patient",
-          "properties": {},
-          "required": []
-        },
-        {
-          "function": "referral_confirmed",
-          "description": "Call when the patient confirms they have a referral.",
-          "target": "check_new_patient",
-          "properties": {},
-          "required": []
-        },
-        {
-          "function": "referral_unavailable",
-          "description": "Call when the patient says they do not have a referral.",
-          "target": "cannot_proceed",
-          "properties": {},
-          "required": []
-        }
-      ]
-    },
-
     {
       "name": "cannot_proceed",
       "task_messages": [
@@ -140,47 +185,9 @@
           "content": "Explain kindly that this appointment type requires a referral from their primary care physician, which they will need to obtain first. Let them know they are welcome to call back once they have it, and wish them well."
         }
       ],
-      "end": true
+      "end": true,
+      "model": "gpt-4o-mini"
     },
-
-    {
-      "name": "check_new_patient",
-      "task_messages": [
-        {
-          "role": "developer",
-          "content": "You have the result of check_appointment_requirements in context, including new_patients_allowed. If new_patients_allowed is true, call skip_new_patient_check immediately — do not ask the patient anything. If new_patients_allowed is false, ask warmly: 'Have you visited us before, or is this your first time?' If they are a returning patient, ask which doctor or specialist they have seen here before — save that name in previous_provider and call is_returning_patient. If they are a new patient, call is_new_patient."
-        }
-      ],
-      "edges": [
-        {
-          "function": "skip_new_patient_check",
-          "description": "Call immediately when new_patients_allowed is true — no question needed.",
-          "target": "search_slots",
-          "properties": {},
-          "required": []
-        },
-        {
-          "function": "is_returning_patient",
-          "description": "Call when the patient confirms they are a returning patient.",
-          "target": "search_slots",
-          "properties": {
-            "previous_provider": {
-              "type": "string",
-              "description": "Name of the provider the patient has seen before, if they mentioned one."
-            }
-          },
-          "required": []
-        },
-        {
-          "function": "is_new_patient",
-          "description": "Call when the patient confirms this is their first visit.",
-          "target": "cannot_proceed_new_patient",
-          "properties": {},
-          "required": []
-        }
-      ]
-    },
-
     {
       "name": "cannot_proceed_new_patient",
       "task_messages": [
@@ -189,15 +196,15 @@
           "content": "Explain kindly that this particular appointment type is only available for returning patients. Suggest they contact the clinic directly so the team can help find the right first visit option for them. Wish them well."
         }
       ],
-      "end": true
+      "end": true,
+      "model": "gpt-4o-mini"
     },
-
     {
       "name": "search_slots",
       "task_messages": [
         {
           "role": "developer",
-          "content": "Call `init_slot_search` first — it will load all available appointments and automatically apply any preferences the caller mentioned earlier. CRITICAL: never invent, guess, or recall any provider name, location, date, or time from memory — only read out values that appear verbatim in the most recent tool response. Read the returned options aloud naturally, for example: 'I have a few options — Dr Smith at Downtown Clinic on Monday September 8th at 9:30 in the morning, or Dr Patel at the Westside location on Tuesday at 1 PM.' Then ask the caller which one they prefer, or whether they would like a different location, provider, or time of day. Use `filter_by_location`, `filter_by_provider`, or `filter_by_time` to narrow results. Use `get_next_options` when the caller asks to hear more. Use `clear_filter` if they want to widen the search again. IMPORTANT — when a filter tool returns status no_slots: the previous options are still fully available and the state has not changed. Tell the caller what was not found (e.g. 'I don't have any slots with Dr Wei Sato for this appointment type'), then re-offer the options you already read out — do not end the conversation and do not invent alternative slots. Only call `get_next_options` if the caller explicitly asks for additional options beyond what was already presented. If `init_slot_search` returns status no_slots, call `no_slots_found`. When the caller chooses a slot, call `select_slot` with the slot_id."
+          "content": "Call `init_slot_search` first \u2014 it will load all available appointments and automatically apply any preferences the caller mentioned earlier. CRITICAL: never invent, guess, or recall any provider name, location, date, or time from memory \u2014 only read out values that appear verbatim in the most recent tool response. Read the returned options aloud naturally, for example: 'I have a few options \u2014 Dr Smith at Downtown Clinic on Monday September 8th at 9:30 in the morning, or Dr Patel at the Westside location on Tuesday at 1 PM.' Then ask the caller which one they prefer, or whether they would like a different location, provider, time of day, or date.\n\nUse these filter tools to narrow results \u2014 call the right one immediately when the caller expresses a preference, do not use `get_next_options` as a substitute:\n  \u2022 `filter_by_location` \u2014 caller prefers a specific clinic or city\n  \u2022 `filter_by_provider` \u2014 caller prefers a specific doctor\n  \u2022 `filter_by_time` \u2014 caller prefers morning, afternoon, or evening\n  \u2022 `filter_by_date` \u2014 caller wants slots on or after a specific date (e.g. 'after September 5th', 'from next week')\n  \u2022 `clear_filter` \u2014 caller wants to remove a filter and widen the search\n  \u2022 `get_next_options` \u2014 caller explicitly asks to hear more options (no date or other preference implied)\n\nIMPORTANT \u2014 when a filter tool returns status no_slots: the previous options are still fully available and the state has not changed. Tell the caller what was not found, then re-offer the options you already read out \u2014 do not end the conversation and do not invent alternative slots. If `init_slot_search` returns status no_slots, call `no_slots_found`. When the caller chooses a slot, call `select_slot` with the slot_id."
         }
       ],
       "tools": [
@@ -205,6 +212,7 @@
         "filter_by_location",
         "filter_by_provider",
         "filter_by_time",
+        "filter_by_date",
         "get_next_options",
         "clear_filter"
       ],
@@ -232,10 +240,16 @@
             },
             "time": {
               "type": "string",
-              "description": "Time range as returned in the options (e.g. '9:30 AM – 1:00 PM')."
+              "description": "Time range as returned in the options (e.g. '9:30 AM \u2013 1:00 PM')."
             }
           },
-          "required": ["slot_id", "provider", "location", "date", "time"]
+          "required": [
+            "slot_id",
+            "provider",
+            "location",
+            "date",
+            "time"
+          ]
         },
         {
           "function": "no_slots_found",
@@ -246,19 +260,18 @@
         }
       ]
     },
-
     {
       "name": "no_slots",
       "task_messages": [
         {
           "role": "developer",
-          "content": "Let the caller know there are no available appointments for that appointment type right now. Briefly apologise, then give them two options: they can try different filter criteria for the same appointment (different doctor, location, or time) — in which case call `try_different_filters`; or they can describe an entirely different appointment type — call `try_different_appointment`. If they want to hang up, call `end_call`."
+          "content": "Let the caller know there are no available appointments for that appointment type right now. Briefly apologise, then give them two options: they can try different filter criteria for the same appointment (different doctor, location, or time) \u2014 in which case call `try_different_filters`; or they can describe an entirely different appointment type \u2014 call `try_different_appointment`. If they want to hang up, call `end_call`."
         }
       ],
       "edges": [
         {
           "function": "try_different_filters",
-          "description": "Call when the caller wants to try the same appointment type with a different doctor, location, or time — keeps the appointment type and referral already confirmed.",
+          "description": "Call when the caller wants to try the same appointment type with a different doctor, location, or time \u2014 keeps the appointment type and referral already confirmed.",
           "target": "search_slots",
           "properties": {},
           "required": []
@@ -279,16 +292,17 @@
         }
       ]
     },
-
     {
       "name": "confirm_booking",
       "task_messages": [
         {
           "role": "developer",
-          "content": "Read back the full appointment details to the caller: their name, the provider, the location, and the date and time. For example: 'To confirm — I have you down for an appointment with Dr Smith at Downtown Clinic on Monday September 8th at 9:30 in the morning. Does that sound right?' If they confirm, call `book_slot` to save the booking. If `book_slot` returns status ok, call `booking_confirmed`. If it returns status conflict, apologise briefly — the slot was just taken — and call `go_back` so they can choose again. If the caller wants to change anything before confirming, call `go_back` immediately without calling `book_slot`."
+          "content": "Read back the full appointment details to the caller: their name, the provider, the location, and the date and time. For example: 'To confirm \u2014 I have you down for an appointment with Dr Smith at Downtown Clinic on Monday September 8th at 9:30 in the morning. Does that sound right?' If they confirm, call `book_slot` to save the booking. If `book_slot` returns status ok, call `booking_confirmed`. If it returns status conflict, apologise briefly \u2014 the slot was just taken \u2014 and call `go_back` so they can choose again. If the caller wants to change anything before confirming, call `go_back` immediately without calling `book_slot`."
         }
       ],
-      "tools": ["book_slot"],
+      "tools": [
+        "book_slot"
+      ],
       "edges": [
         {
           "function": "booking_confirmed",
@@ -306,7 +320,6 @@
         }
       ]
     },
-
     {
       "name": "goodbye",
       "task_messages": [
@@ -315,7 +328,8 @@
           "content": "Tell the caller their appointment is confirmed and they will receive a confirmation shortly. Thank them by name and say goodbye warmly."
         }
       ],
-      "end": true
+      "end": true,
+      "model": "gpt-4o-mini"
     }
   ]
 }

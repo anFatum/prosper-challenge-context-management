@@ -1,4 +1,5 @@
 from .clear_filter import SCHEMA as clear_filter
+from .filter_by_date import SCHEMA as filter_by_date
 from .filter_by_location import SCHEMA as filter_by_location
 from .filter_by_provider import SCHEMA as filter_by_provider
 from .filter_by_time import SCHEMA as filter_by_time
@@ -10,6 +11,7 @@ __all__ = [
     "filter_by_location",
     "filter_by_provider",
     "filter_by_time",
+    "filter_by_date",
     "get_next_options",
     "clear_filter",
 ]
